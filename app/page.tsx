@@ -49,6 +49,7 @@ export default function Home() {
   const [country, setCountry] = useState("52");
   const [balance, setBalance] = useState<number | null>(null);
   const [quote, setQuote] = useState<{ cost: number | null; count: number | null }>({ cost: null, count: null });
+  const [maxPrice, setMaxPrice] = useState<number | null>(null);
   const [order, setOrder] = useState<Order | null>(null);
   const [status, setStatus] = useState("เลือกแอปและประเทศ แล้วกดซื้อหมายเลข");
   const [code, setCode] = useState("");
@@ -75,7 +76,11 @@ export default function Home() {
         fetch(`/api/hero?op=quote&service=${service}&country=${country}`, { cache: "no-store" }).then((r) => r.json()),
       ]);
       if (b.ok) setBalance(Number(b.balance));
-      if (q.ok) setQuote({ cost: q.cost ?? null, count: q.count ?? null });
+      if (q.ok) {
+        const nextCost = q.cost == null ? null : Number(q.cost);
+        setQuote({ cost: nextCost, count: q.count ?? null });
+        setMaxPrice(nextCost);
+      }
       else setQuote({ cost: null, count: null });
     } catch {
       setStatus("เชื่อมต่อ HeroSMS ไม่สำเร็จ ลองใหม่อีกครั้ง");
@@ -109,7 +114,7 @@ export default function Home() {
     try {
       const data = await fetch("/api/hero", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ op: "buy", service, country }),
+        body: JSON.stringify({ op: "buy", service, country, maxPrice }),
       }).then((r) => r.json());
       if (!data.ok) throw new Error(data.message);
       setOrder({ id: String(data.id), phone: String(data.phone), service, country, createdAt: Date.now() });
@@ -202,6 +207,18 @@ export default function Home() {
 
             <section className="checkout-card">
               <div className="checkout-row"><span>{svc.name} · {selectedCountry.flag} {selectedCountry.name}</span><strong>{money(quote.cost)}</strong></div>
+              {quote.cost !== null && <div className="price-picker">
+                <div><span>เลือกราคาสูงสุด</span><strong>{money(maxPrice)}</strong></div>
+                <div className="price-options">
+                  {[1, 1.1, 1.25, 1.5].map((rate, index) => {
+                    const value = Number((quote.cost! * rate).toFixed(2));
+                    return <button key={rate} className={maxPrice === value ? "active" : ""} onClick={() => setMaxPrice(value)}>
+                      {index === 0 ? "ราคาต่ำสุด" : `+${Math.round((rate - 1) * 100)}%`}<b>{money(value)}</b>
+                    </button>;
+                  })}
+                </div>
+                <p>ตั้งราคาสูงขึ้นอาจหาหมายเลขได้ง่ายและเร็วขึ้น แต่ระบบจะไม่ซื้อเกินราคาที่เลือก</p>
+              </div>}
               <button className={`primary ${svc.color}`} onClick={buy} disabled={busy || quote.count === 0}>
                 {busy ? "กำลังดำเนินการ…" : "ซื้อหมายเลขและรับ OTP"}<span>→</span>
               </button>

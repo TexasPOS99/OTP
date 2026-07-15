@@ -79,7 +79,9 @@ export async function POST(req: NextRequest) {
     const body = await req.json() as Record<string, string>;
     if (body.op === "buy") {
       const { service, country } = safeChoice(body.service, body.country);
-      const raw = await hero("getNumberV2", { service, country });
+      const maxPrice = Number(body.maxPrice);
+      if (!Number.isFinite(maxPrice) || maxPrice <= 0 || maxPrice > 100) throw new Error("ราคาที่เลือกไม่ถูกต้อง");
+      const raw = await hero("getNumberV2", { service, country, maxPrice: maxPrice.toFixed(2) });
       if (raw.startsWith("{")) {
         const data = JSON.parse(raw);
         return NextResponse.json({ ok: true, id: data.activationId ?? data.id, phone: data.phoneNumber ?? data.number });
