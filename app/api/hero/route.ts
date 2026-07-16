@@ -14,6 +14,8 @@ const ERRORS: Record<string, string> = {
   BAD_KEY: "API key ใช้งานไม่ได้ กรุณาสร้างคีย์ใหม่",
   ERROR_SQL: "HeroSMS ขัดข้องชั่วคราว กรุณาลองใหม่",
   BAD_SERVICE: "ไม่พบบริการนี้",
+  EARLY_CANCEL_DENIED: "HeroSMS ยังไม่อนุญาตให้ยกเลิกเบอร์นี้ กรุณารออีกเล็กน้อยแล้วลองใหม่",
+  BAD_STATUS: "ยังเปลี่ยนสถานะรายการนี้ไม่ได้ กรุณาลองใหม่",
 };
 
 function config() {

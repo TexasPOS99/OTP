@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 type Service = "ka" | "jg";
-type Order = { id: string; phone: string; service: Service; country: string; createdAt: number };
+type Order = { id: string; phone: string; service: Service; country: string; price: number | null; createdAt: number };
 type Country = { id: string; name: string; en: string; flag: string };
+type HistoryItem = Order & { otp: string; status: "waiting" | "received" | "finished" | "cancelled" };
 
 const SERVICES = {
   ka: { name: "Shopee", mark: "S", color: "shopee", hint: "รับรหัสยืนยันสำหรับ Shopee" },
@@ -55,12 +56,31 @@ export default function Home() {
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState("");
+  const [tab, setTab] = useState<"home" | "history">("home");
+  const [now, setNow] = useState(Date.now());
   const [countryOpen, setCountryOpen] = useState(false);
   const [countrySearch, setCountrySearch] = useState("");
   const [countryUsage, setCountryUsage] = useState<Record<string, number>>(() => {
     if (typeof window === "undefined") return {};
     try { return JSON.parse(localStorage.getItem("hero-country-usage") || "{}"); } catch { return {}; }
   });
+  const [history, setHistory] = useState<HistoryItem[]>(() => {
+    if (typeof window === "undefined") return [];
+    try { return JSON.parse(localStorage.getItem("hero-order-history") || "[]"); } catch { return []; }
+  });
+
+  const storeHistory = useCallback((next: HistoryItem[]) => {
+    setHistory(next);
+    localStorage.setItem("hero-order-history", JSON.stringify(next.slice(0, 100)));
+  }, []);
+
+  const patchHistory = useCallback((id: string, patch: Partial<HistoryItem>) => {
+    setHistory((current) => {
+      const next = current.map((item) => item.id === id ? { ...item, ...patch } : item);
+      localStorage.setItem("hero-order-history", JSON.stringify(next.slice(0, 100)));
+      return next;
+    });
+  }, []);
 
   const sortedCountries = useMemo(() => {
     const term = countrySearch.trim().toLocaleLowerCase("th");
@@ -100,12 +120,19 @@ export default function Home() {
         if (data.code) {
           setCode(String(data.code));
           setStatus("ได้รับ OTP แล้ว");
+          patchHistory(order.id, { otp: String(data.code), status: "received" });
           navigator.vibrate?.([100, 60, 100]);
         } else if (data.message) setStatus(data.message);
       } catch { /* retry on the next interval */ }
     };
     check();
     const timer = window.setInterval(check, 5000);
+    return () => window.clearInterval(timer);
+  }, [order, code, patchHistory]);
+
+  useEffect(() => {
+    if (!order || code) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [order, code]);
 
@@ -117,7 +144,14 @@ export default function Home() {
         body: JSON.stringify({ op: "buy", service, country, maxPrice }),
       }).then((r) => r.json());
       if (!data.ok) throw new Error(data.message);
-      setOrder({ id: String(data.id), phone: String(data.phone), service, country, createdAt: Date.now() });
+      const nextOrder: Order = { id: String(data.id), phone: String(data.phone), service, country, price: maxPrice, createdAt: Date.now() };
+      setOrder(nextOrder);
+      setNow(Date.now());
+      setHistory((current) => {
+        const next = [{ ...nextOrder, otp: "", status: "waiting" } as HistoryItem, ...current.filter((item) => item.id !== nextOrder.id)];
+        localStorage.setItem("hero-order-history", JSON.stringify(next.slice(0, 100)));
+        return next;
+      });
       setCountryUsage((current) => {
         const next = { ...current, [country]: (current[country] || 0) + 1 };
         localStorage.setItem("hero-country-usage", JSON.stringify(next));
@@ -139,11 +173,32 @@ export default function Home() {
         body: JSON.stringify({ op: "status", id: order.id, action }),
       }).then((r) => r.json());
       if (!data.ok) throw new Error(data.message);
-      if (action === "again") { setCode(""); setStatus("กำลังรอ OTP ใหม่…"); }
-      else { setOrder(null); setCode(""); setStatus(action === "cancel" ? "ยกเลิกรายการแล้ว" : "จบรายการเรียบร้อย"); }
+      if (action === "again") { setCode(""); setNow(Date.now()); setStatus("กำลังรอ OTP ใหม่…"); patchHistory(order.id, { status: "waiting" }); }
+      else {
+        patchHistory(order.id, { status: action === "cancel" ? "cancelled" : "finished", otp: code });
+        setOrder(null); setCode(""); setStatus(action === "cancel" ? "ยกเลิกรายการแล้ว" : "จบรายการเรียบร้อย");
+      }
       await loadSummary();
     } catch (e) { setStatus(e instanceof Error ? e.message : "ดำเนินการไม่สำเร็จ"); }
     finally { setBusy(false); }
+  }
+
+  async function replaceNumber() {
+    if (!order) return;
+    setBusy(true); setStatus("กำลังยกเลิกเบอร์เดิม…");
+    try {
+      const data = await fetch("/api/hero", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ op: "status", id: order.id, action: "cancel" }),
+      }).then((r) => r.json());
+      if (!data.ok) throw new Error(data.message);
+      patchHistory(order.id, { status: "cancelled" });
+      setOrder(null); setCode(""); setBusy(false);
+      await buy();
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "ยังเปลี่ยนหมายเลขไม่ได้ กรุณารอสักครู่");
+      setBusy(false);
+    }
   }
 
   async function copy(text: string, label: string) {
@@ -153,6 +208,7 @@ export default function Home() {
 
   const selectedCountry = COUNTRIES.find((c) => c.id === country)!;
   const svc = SERVICES[service];
+  const secondsLeft = order ? Math.max(0, 60 - Math.floor((now - order.createdAt) / 1000)) : 0;
 
   return (
     <main className="app-shell">
@@ -167,7 +223,27 @@ export default function Home() {
           </button>
         </header>
 
-        {!order ? (
+        <nav className="app-tabs" aria-label="เมนูหลัก">
+          <button className={tab === "home" ? "active" : ""} onClick={() => setTab("home")}><span>⌂</span> รับ OTP</button>
+          <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}><span>◷</span> ประวัติ <b>{history.length}</b></button>
+        </nav>
+
+        {tab === "history" ? (
+          <section className="history-panel">
+            <div className="history-head"><div><p>รายการทั้งหมด</p><h2>ประวัติการซื้อ</h2></div>{history.length > 0 && <button onClick={() => { if (confirm("ล้างประวัติทั้งหมดใช่ไหม?")) storeHistory([]); }}>ล้างประวัติ</button>}</div>
+            {history.length === 0 ? <div className="empty-history"><span>◷</span><strong>ยังไม่มีประวัติ</strong><p>รายการที่ซื้อจะแสดงที่นี่โดยอัตโนมัติ</p><button onClick={() => setTab("home")}>เริ่มรับ OTP</button></div> : <div className="history-list">
+              {history.map((item) => {
+                const itemCountry = COUNTRIES.find((c) => c.id === item.country);
+                const labels = { waiting: "กำลังรอ", received: "ได้รับ OTP", finished: "สำเร็จ", cancelled: "ยกเลิก" };
+                return <article key={item.id} className={`history-item ${item.status}`}>
+                  <div className={`history-brand ${SERVICES[item.service].color}`}><span className="app-mark">{SERVICES[item.service].mark}</span><div><strong>{SERVICES[item.service].name}</strong><small>{itemCountry?.flag} {itemCountry?.name || item.country} · {money(item.price)}</small></div><em>{labels[item.status]}</em></div>
+                  <div className="history-data"><button onClick={() => copy(item.phone, `h-phone-${item.id}`)}><small>หมายเลข</small><strong>{item.phone}</strong><i>{copied === `h-phone-${item.id}` ? "คัดลอกแล้ว" : "คัดลอก"}</i></button><button disabled={!item.otp} onClick={() => copy(item.otp, `h-otp-${item.id}`)}><small>OTP</small><strong>{item.otp || "—"}</strong><i>{item.otp ? copied === `h-otp-${item.id}` ? "คัดลอกแล้ว" : "คัดลอก" : "ไม่มีรหัส"}</i></button></div>
+                  <time>{new Date(item.createdAt).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" })}</time>
+                </article>;
+              })}
+            </div>}
+          </section>
+        ) : !order ? (
           <>
             <section className="step">
               <div className="step-title"><span>1</span><h2>เลือกแอป</h2></div>
@@ -229,6 +305,11 @@ export default function Home() {
           <section className="active-order">
             <div className={`active-brand ${SERVICES[order.service].color}`}><span className="app-mark">{SERVICES[order.service].mark}</span><div><small>กำลังใช้งาน</small><strong>{SERVICES[order.service].name}</strong></div><em>LIVE</em></div>
             <div className="status-line"><span className="pulse" />{status}</div>
+            {!code && <div className={`replace-card ${secondsLeft === 0 ? "ready" : ""}`}>
+              <div className="countdown" style={{ "--progress": `${(60 - secondsLeft) * 6}deg` } as React.CSSProperties}><span>{secondsLeft || "✓"}</span></div>
+              <div><strong>{secondsLeft > 0 ? "กำลังรอ OTP" : "เปลี่ยนหมายเลขได้แล้ว"}</strong><p>{secondsLeft > 0 ? `รออีก ${secondsLeft} วินาที หากรหัสไม่เข้า` : "ระบบจะยกเลิกเบอร์นี้แล้วซื้อเบอร์ใหม่ให้"}</p></div>
+              <button onClick={replaceNumber} disabled={busy || secondsLeft > 0}>{busy ? "กำลังเปลี่ยน…" : "ยกเลิกและเปลี่ยนเบอร์"}</button>
+            </div>}
             <div className="value-box">
               <label>หมายเลขโทรศัพท์</label>
               <div><strong>{order.phone}</strong><button onClick={() => copy(order.phone, "phone")}>{copied === "phone" ? "คัดลอกแล้ว" : "คัดลอก"}</button></div>
@@ -245,7 +326,7 @@ export default function Home() {
           </section>
         )}
 
-        {!order && <div className="notice"><span>🔒</span><p><strong>API key ถูกเก็บอย่างปลอดภัย</strong><br />คีย์ไม่ถูกส่งมายังมือถือหรือแสดงบนหน้าเว็บ</p></div>}
+        {tab === "home" && !order && <div className="notice"><span>🔒</span><p><strong>API key ถูกเก็บอย่างปลอดภัย</strong><br />คีย์ไม่ถูกส่งมายังมือถือหรือแสดงบนหน้าเว็บ</p></div>}
       </section>
     </main>
   );
